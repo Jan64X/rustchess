@@ -372,31 +372,9 @@ impl Board {
                 // Check if pawn reached the opposite end
                 if (piece.color == PieceColor::White && to_y == 0) ||
                    (piece.color == PieceColor::Black && to_y == 7) {
-                    // For AI, automatically promote to Queen
-                    // For human players, ask for choice
-                    let promotion = if piece.color == PieceColor::Black {
-                        PieceType::Queen
-                    } else {
-                        println!("Promote pawn to:");
-                        println!("1. Queen");
-                        println!("2. Rook");
-                        println!("3. Bishop");
-                        println!("4. Knight");
-                        print!("Choose promotion (1-4): ");
-                        io::stdout().flush().unwrap();
-                        
-                        let mut input = String::new();
-                        io::stdin().read_line(&mut input).unwrap();
-                        match input.trim() {
-                            "2" => PieceType::Rook,
-                            "3" => PieceType::Bishop,
-                            "4" => PieceType::Knight,
-                            _ => PieceType::Queen,
-                        }
-                    };
-                    
+                    // Automatically promote to Queen
                     self.squares[to_y][to_x] = Some(Piece {
-                        piece_type: promotion,
+                        piece_type: PieceType::Queen,  // Always promote to Queen for simplicity
                         color: piece.color,
                     });
                 }
