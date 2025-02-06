@@ -1,5 +1,6 @@
 use colored::*;
 use std::io::{self, Write};
+use tokio::time::{sleep, Duration};
 
 #[derive(Clone, Copy, PartialEq)]
 enum PieceColor {
@@ -109,6 +110,101 @@ impl Board {
         x >= 0 && x < 8 && y >= 0 && y < 8
     }
 
+    fn is_king_in_check(&self, color: PieceColor) -> bool {
+        // Find king position
+        let mut king_pos = None;
+        for i in 0..8 {
+            for j in 0..8 {
+                if let Some(piece) = self.squares[i][j] {
+                    if piece.piece_type == PieceType::King && piece.color == color {
+                        king_pos = Some((i, j));
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Some((king_i, king_j)) = king_pos {
+            // Check if any opponent piece can capture the king
+            for i in 0..8 {
+                for j in 0..8 {
+                    if let Some(piece) = self.squares[i][j] {
+                        if piece.color != color {
+                            let from = format!("{}{}", (b'a' + j as u8) as char, 8 - i);
+                            let to = format!("{}{}", (b'a' + king_j as u8) as char, 8 - king_i);
+                            if self.is_valid_move(&from, &to) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn is_checkmate(&self, color: PieceColor) -> bool {
+        if !self.is_king_in_check(color) {
+            return false;
+        }
+
+        // Try all possible moves to see if any can get out of check
+        for i in 0..8 {
+            for j in 0..8 {
+                if let Some(piece) = self.squares[i][j] {
+                    if piece.color == color {
+                        let from = format!("{}{}", (b'a' + j as u8) as char, 8 - i);
+                        for to_i in 0..8 {
+                            for to_j in 0..8 {
+                                let to = format!("{}{}", (b'a' + to_j as u8) as char, 8 - to_i);
+                                if self.is_valid_move(&from, &to) {
+                                    let mut new_board = self.clone();
+                                    if new_board.make_move(&from, &to) {
+                                        if !new_board.is_king_in_check(color) {
+                                            return false;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    fn is_stalemate(&self, color: PieceColor) -> bool {
+        if self.is_king_in_check(color) {
+            return false;
+        }
+
+        // Check if any legal move exists
+        for i in 0..8 {
+            for j in 0..8 {
+                if let Some(piece) = self.squares[i][j] {
+                    if piece.color == color {
+                        let from = format!("{}{}", (b'a' + j as u8) as char, 8 - i);
+                        for to_i in 0..8 {
+                            for to_j in 0..8 {
+                                let to = format!("{}{}", (b'a' + to_j as u8) as char, 8 - to_i);
+                                if self.is_valid_move(&from, &to) {
+                                    let mut new_board = self.clone();
+                                    if new_board.make_move(&from, &to) {
+                                        if !new_board.is_king_in_check(color) {
+                                            return false;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        true
+    }
+
     fn is_valid_move(&self, from: &str, to: &str) -> bool {
         let (from_x, from_y) = match parse_position(from) {
             (Some(x), Some(y)) => (x, y),
@@ -132,14 +228,24 @@ impl Board {
             }
         }
 
-        match piece.piece_type {
+        let basic_valid = match piece.piece_type {
             PieceType::Pawn => self.is_valid_pawn_move(from_x, from_y, to_x, to_y, piece.color),
             PieceType::Rook => self.is_valid_rook_move(from_x, from_y, to_x, to_y),
             PieceType::Knight => self.is_valid_knight_move(from_x, from_y, to_x, to_y),
             PieceType::Bishop => self.is_valid_bishop_move(from_x, from_y, to_x, to_y),
             PieceType::Queen => self.is_valid_queen_move(from_x, from_y, to_x, to_y),
             PieceType::King => self.is_valid_king_move(from_x, from_y, to_x, to_y),
+        };
+
+        if !basic_valid {
+            return false;
         }
+
+        // Check if move puts or leaves own king in check
+        let mut new_board = self.clone();
+        new_board.squares[to_y][to_x] = new_board.squares[from_y][from_x];
+        new_board.squares[from_y][from_x] = None;
+        !new_board.is_king_in_check(piece.color)
     }
 
     fn is_valid_pawn_move(&self, from_x: usize, from_y: usize, to_x: usize, to_y: usize, color: PieceColor) -> bool {
@@ -332,7 +438,7 @@ impl ChessAI {
     fn evaluate_position(&self, board: &Board) -> i32 {
         let mut score = 0;
         
-        // Piece values and position bonuses
+        // Piece position tables for improved evaluation
         let pawn_position = [
             0,  0,  0,  0,  0,  0,  0,  0,
             50, 50, 50, 50, 50, 50, 50, 50,
@@ -342,6 +448,61 @@ impl ChessAI {
             5, -5,-10,  0,  0,-10, -5,  5,
             5, 10, 10,-20,-20, 10, 10,  5,
             0,  0,  0,  0,  0,  0,  0,  0
+        ];
+
+        let knight_position = [
+            -50,-40,-30,-30,-30,-30,-40,-50,
+            -40,-20,  0,  0,  0,  0,-20,-40,
+            -30,  0, 10, 15, 15, 10,  0,-30,
+            -30,  5, 15, 20, 20, 15,  5,-30,
+            -30,  0, 15, 20, 20, 15,  0,-30,
+            -30,  5, 10, 15, 15, 10,  5,-30,
+            -40,-20,  0,  5,  5,  0,-20,-40,
+            -50,-40,-30,-30,-30,-30,-40,-50
+        ];
+
+        let bishop_position = [
+            -20,-10,-10,-10,-10,-10,-10,-20,
+            -10,  0,  0,  0,  0,  0,  0,-10,
+            -10,  0,  5, 10, 10,  5,  0,-10,
+            -10,  5,  5, 10, 10,  5,  5,-10,
+            -10,  0, 10, 10, 10, 10,  0,-10,
+            -10, 10, 10, 10, 10, 10, 10,-10,
+            -10,  5,  0,  0,  0,  0,  5,-10,
+            -20,-10,-10,-10,-10,-10,-10,-20
+        ];
+
+        let rook_position = [
+            0,  0,  0,  0,  0,  0,  0,  0,
+            5, 10, 10, 10, 10, 10, 10,  5,
+            -5,  0,  0,  0,  0,  0,  0, -5,
+            -5,  0,  0,  0,  0,  0,  0, -5,
+            -5,  0,  0,  0,  0,  0,  0, -5,
+            -5,  0,  0,  0,  0,  0,  0, -5,
+            -5,  0,  0,  0,  0,  0,  0, -5,
+            0,  0,  0,  5,  5,  0,  0,  0
+        ];
+
+        let queen_position = [
+            -20,-10,-10, -5, -5,-10,-10,-20,
+            -10,  0,  0,  0,  0,  0,  0,-10,
+            -10,  0,  5,  5,  5,  5,  0,-10,
+            -5,  0,  5,  5,  5,  5,  0, -5,
+            0,  0,  5,  5,  5,  5,  0, -5,
+            -10,  5,  5,  5,  5,  5,  0,-10,
+            -10,  0,  5,  0,  0,  0,  0,-10,
+            -20,-10,-10, -5, -5,-10,-10,-20
+        ];
+
+        let king_position = [
+            -30,-40,-40,-50,-50,-40,-40,-30,
+            -30,-40,-40,-50,-50,-40,-40,-30,
+            -30,-40,-40,-50,-50,-40,-40,-30,
+            -30,-40,-40,-50,-50,-40,-40,-30,
+            -20,-30,-30,-40,-40,-30,-30,-20,
+            -10,-20,-20,-20,-20,-20,-20,-10,
+            20, 20,  0,  0,  0,  0, 20, 20,
+            20, 30, 10,  0,  0, 10, 30, 20
         ];
 
         for i in 0..8 {
@@ -356,7 +517,46 @@ impl ChessAI {
                             };
                             pawn_position[idx]
                         },
-                        _ => 0
+                        PieceType::Knight => {
+                            let idx = if piece.color == self.color {
+                                i * 8 + j
+                            } else {
+                                (7 - i) * 8 + j
+                            };
+                            knight_position[idx]
+                        },
+                        PieceType::Bishop => {
+                            let idx = if piece.color == self.color {
+                                i * 8 + j
+                            } else {
+                                (7 - i) * 8 + j
+                            };
+                            bishop_position[idx]
+                        },
+                        PieceType::Rook => {
+                            let idx = if piece.color == self.color {
+                                i * 8 + j
+                            } else {
+                                (7 - i) * 8 + j
+                            };
+                            rook_position[idx]
+                        },
+                        PieceType::Queen => {
+                            let idx = if piece.color == self.color {
+                                i * 8 + j
+                            } else {
+                                (7 - i) * 8 + j
+                            };
+                            queen_position[idx]
+                        },
+                        PieceType::King => {
+                            let idx = if piece.color == self.color {
+                                i * 8 + j
+                            } else {
+                                (7 - i) * 8 + j
+                            };
+                            king_position[idx]
+                        },
                     };
 
                     let piece_value = match piece.piece_type {
@@ -368,15 +568,37 @@ impl ChessAI {
                         PieceType::King => 20000,
                     };
 
-                    if piece.color == self.color {
-                        score += piece_value + position_value;
+                    // Add mobility bonus
+                    let mobility_bonus = if piece.color == self.color {
+                        self.count_legal_moves(board, i, j) as i32 * 10
                     } else {
-                        score -= piece_value + position_value;
+                        -(self.count_legal_moves(board, i, j) as i32 * 10)
+                    };
+
+                    if piece.color == self.color {
+                        score += piece_value + position_value + mobility_bonus;
+                    } else {
+                        score -= piece_value + position_value - mobility_bonus;
                     }
                 }
             }
         }
         score
+    }
+
+    fn count_legal_moves(&self, board: &Board, i: usize, j: usize) -> usize {
+        let from = format!("{}{}", (b'a' + j as u8) as char, 8 - i);
+        let mut count = 0;
+        
+        for to_i in 0..8 {
+            for to_j in 0..8 {
+                let to = format!("{}{}", (b'a' + to_j as u8) as char, 8 - to_i);
+                if board.is_valid_move(&from, &to) {
+                    count += 1;
+                }
+            }
+        }
+        count
     }
 
     fn get_all_possible_moves(&self, board: &Board) -> Vec<(String, String)> {
@@ -467,11 +689,13 @@ impl ChessAI {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     println!("Welcome to RustChess!");
     println!("1. Play against AI");
     println!("2. Play against another player");
-    print!("Choose game mode (1 or 2): ");
+    println!("3. Watch AI vs AI");
+    print!("Choose game mode (1-3): ");
     io::stdout().flush().unwrap();
 
     let mut input = String::new();
@@ -480,11 +704,20 @@ fn main() {
 
     let mut board = Board::new();
     let mut current_turn = PieceColor::White;
-    let ai = if game_mode == "1" {
-        println!("You'll play as White against the AI (Black)");
-        Some(ChessAI::new(PieceColor::Black))
-    } else {
-        None
+    
+    // Initialize AIs based on game mode
+    let (white_ai, black_ai) = match game_mode {
+        "1" => {
+            println!("You'll play as White against the AI (Black)");
+            (None, Some(ChessAI::new(PieceColor::Black)))
+        }
+        "3" => {
+            println!("Watch two AIs play against each other!");
+            println!("Game will advance automatically with 1 second delay between moves.");
+            println!("Press Ctrl+C to end the game.");
+            (Some(ChessAI::new(PieceColor::White)), Some(ChessAI::new(PieceColor::Black)))
+        }
+        _ => (None, None)
     };
 
     loop {
@@ -496,19 +729,53 @@ fn main() {
             "Black"
         };
 
-        if ai.is_some() && current_turn == PieceColor::Black {
-            println!("AI (Black) is thinking...");
-            if let Some((from, to)) = ai.as_ref().unwrap().make_move(&board) {
-                println!("AI moves: {} to {}", from, to);
+        // Check for checkmate and stalemate
+        if board.is_checkmate(current_turn) {
+            println!("Checkmate! {} wins!", if current_turn == PieceColor::White { "Black" } else { "White" });
+            break;
+        }
+
+        if board.is_stalemate(current_turn) {
+            println!("Stalemate! The game is a draw!");
+            break;
+        }
+
+        // Show if the king is in check
+        if board.is_king_in_check(current_turn) {
+            println!("{} is in check!", turn_str);
+        }
+
+        // Handle AI moves
+        let current_ai = match current_turn {
+            PieceColor::White => white_ai.as_ref(),
+            PieceColor::Black => black_ai.as_ref(),
+        };
+
+        if let Some(ai) = current_ai {
+            println!("{} AI is thinking...", turn_str);
+            if let Some((from, to)) = ai.make_move(&board) {
+                println!("{} AI moves: {} to {}", turn_str, from, to);
+                
+                // In AI vs AI mode, wait for 1 second before next move
+                if game_mode == "3" {
+                    sleep(Duration::from_secs(1)).await;
+                }
+
                 if board.make_move(&from, &to) {
-                    current_turn = PieceColor::White;
+                    current_turn = if current_turn == PieceColor::White {
+                        PieceColor::Black
+                    } else {
+                        PieceColor::White
+                    };
                 }
             } else {
                 println!("AI couldn't find a valid move!");
+                break;
             }
             continue;
         }
         
+        // Handle human moves
         print!("{}'s turn (e.g., 'e2 e4' or 'quit'): ", turn_str);
         io::stdout().flush().unwrap();
 
